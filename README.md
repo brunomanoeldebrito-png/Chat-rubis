@@ -1,10 +1,9 @@
-# rubis.
+# rubis.py
 from flask import Flask, render_template_string, request, session, redirect, jsonify
 import sqlite3
 import random
 from werkzeug.utils import secure_filename
 import os
-from datetime import datetime, timedelta
 
 app = Flask(__name__)
 app.secret_key = "rubis_secret"
@@ -15,34 +14,23 @@ UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-# --- Inicializar banco de dados ---
+# --- Banco de dados ---
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nickname TEXT,
             email TEXT UNIQUE,
             password TEXT,
-            nickname TEXT,
-            plan TEXT DEFAULT 'Free',
-            plus_trial_used INTEGER DEFAULT 0,
-            pro_plus_trial_used INTEGER DEFAULT 0,
-            trial_start TIMESTAMP
-        )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS conversations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            title TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            plan TEXT DEFAULT 'Free'
         )
     """)
     c.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            conversation_id INTEGER,
+            user_id INTEGER,
             role TEXT,
             content TEXT
         )
@@ -118,8 +106,6 @@ header{display:flex;justify-content:space-between;align-items:center;padding:10p
 header .name{font-weight:bold;font-size:18px;}
 header .buttons button{margin-left:5px;padding:5px 10px;border:none;border-radius:5px;cursor:pointer;font-size:18px;}
 #chat-container{display:flex;height:calc(100vh - 50px);}
-#sidebar{width:250px;background:#fff;box-shadow:2px 0 5px rgba(0,0,0,0.1);position:fixed;left:-250px;top:50px;height:100%;overflow-y:auto;transition:left 0.3s cubic-bezier(0.25, 1, 0.5, 1);padding:10px;}
-#sidebar.open{left:0;}
 #chat{flex:1;margin-left:0;padding:10px;display:flex;flex-direction:column;overflow-y:auto;height:calc(100vh - 50px);}
 .message{max-width:60%;padding:10px;margin:5px;border-radius:10px;}
 .user{background:#4CAF50;color:#fff;align-self:flex-end;}
@@ -141,10 +127,6 @@ header .buttons button{margin-left:5px;padding:5px 10px;border:none;border-radiu
 </header>
 
 <div id="chat-container">
-<aside id="sidebar">
-<h3>Histórico</h3>
-<div id="conversations"></div>
-</aside>
 <div id="chat"></div>
 </div>
 
@@ -156,54 +138,53 @@ header .buttons button{margin-left:5px;padding:5px 10px;border:none;border-radiu
 
 <script>
 const chat = document.getElementById('chat');
-const sidebar = document.getElementById('sidebar');
-document.getElementById('history').onclick = ()=>sidebar.classList.toggle('open');
 
 document.getElementById('send').onclick = async ()=>{
     let msg = document.getElementById('message').value;
     if(!msg) return;
     chat.innerHTML += `<div class="message user">${msg}</div>`;
     document.getElementById('message').value='';
-    let res = await fetch('/send_message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg})});
+    let res = await fetch('/send_message',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({message:msg})
+    });
     let data = await res.json();
     chat.innerHTML += `<div class="message bot">${data.answer}</div>`;
     chat.scrollTop = chat.scrollHeight;
 }
-
-document.getElementById('new-convo').onclick = ()=>{fetch('/nova_conversa').then(()=>location.reload())}
-document.getElementById('upgrade').onclick = ()=>alert('Upgrade de plano em breve!'); 
+document.getElementById('new-convo').onclick = ()=>{fetch('/nova_conversa').then(()=>location.reload())};
+document.getElementById('upgrade').onclick = ()=>alert('Upgrade de plano em breve!');
 document.getElementById('menu').onclick = ()=>alert('Menu de contas em breve!');
 </script>
 </body>
 </html>
 """
 
-# --- Funções básicas ---
+# --- Funções ---
+def add_user(nickname,email,password):
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute("INSERT INTO users (nickname,email,password) VALUES (?,?,?)",(nickname,email,password))
+        conn.commit()
+        conn.close()
+        return True
+    except:
+        return False
+
 def get_user_by_email(email):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("SELECT * FROM users WHERE email=?",(email,))
-    user=c.fetchone()
+    user = c.fetchone()
     conn.close()
     return user
 
-def add_user(nickname,email,password):
+def add_message(user_id, role, content):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    try:
-        c.execute("INSERT INTO users (nickname,email,password) VALUES (?,?,?)",(nickname,email,password))
-        conn.commit()
-    except:
-        conn.close()
-        return False
-    conn.close()
-    return True
-
-def add_message(user_id, role, content, conversation_id=None):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    if conversation_id:
-        c.execute("INSERT INTO messages (conversation_id, role, content) VALUES (?,?,?)",(conversation_id,role,content))
+    c.execute("INSERT INTO messages (user_id, role, content) VALUES (?,?,?)",(user_id, role, content))
     conn.commit()
     conn.close()
 
@@ -213,15 +194,10 @@ def generate_answer(msg):
     resumo_keywords = ["resuma", "resumir", "resumo", "resumido"]
     casuais = ["Oi! 😎","E aí, tudo bem?","Olá! Como vai?","Oi, que bom te ver aqui!"]
     if any(k in msg_lower for k in resumo_keywords):
-        return {"answer": f"Resumo solicitado: {msg}\nAqui está uma versão resumida."}
+        return {"answer": f"Resumo solicitado: {msg}"}
     if any(p in msg_lower for p in perguntas):
-        respostas = [
-            f"Explicação detalhada sobre: {msg}\nCom exemplos e contexto.",
-            f"Resumo de {msg}:\n- Pontos principais\n- Informações relevantes\n- Exemplos práticos",
-            f"Palavras e conceitos importantes de {msg}:\n1. Conceito 1\n2. Conceito 2\n3. Como aplicar"
-        ]
-        return {"answer":respostas[0]}
-    return {"answer":random.choice(casuais)}
+        return {"answer": f"Explicação detalhada sobre: {msg}"}
+    return {"answer": random.choice(casuais)}
 
 # --- Rotas ---
 @app.route("/")
@@ -231,4 +207,45 @@ def index():
     return render_template_string(login_template)
 
 @app.route("/register_page")
-def# Chat-rubis
+def register_page():
+    return render_template_string(register_template)
+
+@app.route("/register",methods=["POST"])
+def register():
+    nickname = request.form["nickname"]
+    email = request.form["email"]
+    password = request.form["password"]
+    if add_user(nickname,email,password):
+        user = get_user_by_email(email)
+        session["user_id"] = user[0]
+        session["nickname"] = user[1]
+        return redirect("/chat")
+    else:
+        return "Email já cadastrado! <a href='/register_page'>Voltar</a>"
+
+@app.route("/login",methods=["POST"])
+def login():
+    email = request.form["email"]
+    password = request.form["password"]
+    user = get_user_by_email(email)
+    if user and user[3]==password:
+        session["user_id"]=user[0]
+        session["nickname"]=user[1]
+        return redirect("/chat")
+    return "Login ou senha inválido! <a href='/'>Voltar</a>"
+
+@app.route("/chat")
+def chat():
+    if "user_id" not in session:
+        return redirect("/")
+    return render_template_string(chat_template)
+
+@app.route("/send_message",methods=["POST"])
+def send_message():
+    if "user_id" not in session:
+        return jsonify({"answer":"Faça login primeiro"})
+    data = request.get_json()
+    msg = data["message"]
+    add_message(session["user_id"], "user", msg)
+    ans = generate_answer(msg)
+    add
